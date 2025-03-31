@@ -3,6 +3,7 @@ import pandas as pd
 import difflib
 import re
 from datetime import datetime
+from rapidfuzz import fuzz
 
 # Artikeldaten laden
 df = pd.read_excel("Artikelliste.xlsx")
@@ -21,25 +22,40 @@ def finde_passende_artikel(eingabe, df):
     teile = [t.strip() for t in eingabe.split(",")]
 
     for teil in teile:
-        menge_search = re.search(r"(\d+(?:[\.,]\d+)?)(\s*(stk|st\.?|meter|m|mtr))?", teil.lower())
-        menge = menge_search.group(1).replace(",", ".") if menge_search else "1"
-        try:
-            menge = int(float(menge))
-        except:
-            menge = 1
+        menge = 1
+        einheit = "STK"
 
+        # Mengenextraktion robuster
+        menge_search = re.search(r"(\d+(?:[\.,]\d+)?)(\s*(stk|st\.?|stück|meter|m|mtr))?", teil.lower())
+        if menge_search:
+            menge_text = menge_search.group(1).replace(",", ".")
+            try:
+                menge = int(float(menge_text))
+            except:
+                menge = 1
+            if menge_search.group(3):
+                einheit_raw = menge_search.group(3).lower()
+                if "m" in einheit_raw:
+                    einheit = "MTR"
+
+        # Beste Übereinstimmung per RapidFuzz
         beschreibungen = df["bezeichnung"].astype(str)
-        beschreibungen_liste = beschreibungen.str.lower().tolist()
-        match = difflib.get_close_matches(teil.lower(), beschreibungen_liste, n=1, cutoff=0.3)
+        beste_score = 0
+        bester_treffer = None
 
-        if match:
-            treffer = df[beschreibungen.str.lower() == match[0]].iloc[0]
+        for _, row in df.iterrows():
+            score = fuzz.token_set_ratio(teil.lower(), str(row["bezeichnung"]).lower())
+            if score > beste_score:
+                beste_score = score
+                bester_treffer = row
+
+        if bester_treffer is not None and beste_score >= 60:
             artikel_ergebnisse.append({
-                "Artikelnummer": treffer["artikel nr."],
-                "Bezeichnung": treffer["bezeichnung"],
+                "Artikelnummer": str(bester_treffer.get("ean", "")),
+                "Bezeichnung": bester_treffer["bezeichnung"],
                 "Menge": menge,
-                "Einheit": "STK" if menge > 1 else "MTR",
-                "EAN": treffer.get("ean", "")
+                "Einheit": einheit,
+                "EAN": bester_treffer.get("ean", "")
             })
 
     return artikel_ergebnisse
@@ -55,8 +71,10 @@ def erstelle_ugl(artikel_liste):
     for i, art in enumerate(artikel_liste, 1):
         menge_str = str(art["Menge"]).rjust(11, "0") + "0"
         pos = str(i).rjust(3, "0")
+        artikelnummer = str(art['EAN'])[:15].ljust(15)
+        bezeichnung = str(art['Bezeichnung'])[:60].ljust(60)
         lines.append(
-            f"POA00000000{pos}000000000{pos}{art['Artikelnummer'][:15].ljust(15)}     {menge_str}{art['Bezeichnung'][:60].ljust(60)}000000000000           0000000000 H                   {art['Einheit']}2L"
+            f"POA00000000{pos}000000000{pos}{artikelnummer}     {menge_str}{bezeichnung}000000000000           0000000000 H                   {art['Einheit']}2L"
         )
 
     lines.append("END")
@@ -65,7 +83,7 @@ def erstelle_ugl(artikel_liste):
 # Streamlit UI
 st.title("🧰 UGL-Generator für freie Artikeleingaben")
 
-freitext = st.text_area("Gib hier die Artikel ein:",
+freitext = st.text_area("🎤 Du kannst hier auch per Sprache diktieren:",
                         "Kupferrohr 22 8 Meter, Press Bogen 22 90, 50er HT Rohr 0,5 m 3 Stck")
 
 if st.button("🔍 Artikel erkennen und UGL erstellen"):
